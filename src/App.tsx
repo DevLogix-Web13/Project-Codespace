@@ -21,9 +21,23 @@ import {
   Volume2,
   VolumeX,
   BarChart as BarChartIcon,
-  Activity
+  Activity,
+  Settings,
+  Download,
+  Bell,
+  AlertTriangle,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import {
+  HashRouter as Router,
+  Routes,
+  Route,
+  Link,
+  useParams,
+  useNavigate
+} from 'react-router-dom';
+import { QRCodeCanvas } from 'qrcode.react';
 import {
   Radar,
   RadarChart,
@@ -228,10 +242,10 @@ const audio = new SoundManager();
 type Stage = 'HEATING' | 'RECTANGULAR_MOLD' | 'SQUARING' | 'GROVE_CIRCLE' | 'SIZING' | 'QA' | 'SALES' | 'IDLE';
 type SteelType = 'CARBON' | 'STAINLESS' | 'ALLOY';
 
-const STEEL_TYPES: Record<SteelType, { label: string; heatingFactor: number; minStrength: number; basePrice: number; color: string }> = {
-  CARBON: { label: 'Carbon Steel', heatingFactor: 1.0, minStrength: 500, basePrice: 450, color: 'text-slate-400' },
-  STAINLESS: { label: 'Stainless Steel', heatingFactor: 0.7, minStrength: 600, basePrice: 850, color: 'text-blue-400' },
-  ALLOY: { label: 'Alloy Steel', heatingFactor: 0.85, minStrength: 550, basePrice: 650, color: 'text-purple-400' }
+const STEEL_TYPES: Record<SteelType, { label: string; heatingFactor: number; minStrength: number; basePrice: number; materialCost: number; restockCost: number; color: string }> = {
+  CARBON: { label: 'Carbon Steel', heatingFactor: 1.0, minStrength: 500, basePrice: 450, materialCost: 150, restockCost: 120, color: 'text-slate-400' },
+  STAINLESS: { label: 'Stainless Steel', heatingFactor: 0.7, minStrength: 600, basePrice: 850, materialCost: 350, restockCost: 300, color: 'text-blue-400' },
+  ALLOY: { label: 'Alloy Steel', heatingFactor: 0.85, minStrength: 550, basePrice: 650, materialCost: 250, restockCost: 200, color: 'text-purple-400' }
 };
 
 interface Rebar {
@@ -243,13 +257,36 @@ interface Rebar {
     composition: { element: string; percentage: number }[];
     tensileStrength: number; // in MPa
     analysis: string;
+    rejectionReasons?: string[];
+    malfunctions?: string[];
   };
   specs: {
     length: number;
     shape: 'RECTANGLE' | 'SQUARE' | 'CIRCLE';
     temperature: number;
   };
+  costs: {
+    material: number;
+    energy: number;
+    total: number;
+  };
+  stageTimers: Partial<Record<Stage, number>>;
 }
+
+interface AppNotification {
+  id: string;
+  type: string;
+  message: string;
+  timestamp: number;
+}
+
+type MachineId = 'HEATING' | 'RECTANGULAR_MOLD' | 'SQUARING' | 'GROVE_CIRCLE' | 'SIZING';
+
+type MaintenanceSchedule = {
+  batchesSinceLast: number;
+  threshold: number;
+  enabled: boolean;
+};
 
 const STAGES: { id: Stage; label: string; icon: React.ReactNode; color: string; description: string }[] = [
   { 
@@ -303,17 +340,15 @@ const STAGES: { id: Stage; label: string; icon: React.ReactNode; color: string; 
   }
 ];
 
-const MIN_TENSILE_STRENGTH = 500; // MPa threshold for "High Quality"
-const NEAR_THRESHOLD = 450; // MPa threshold for "Near Quality"
-
-const getStrengthColorClass = (strength: number, type: 'text' | 'bg') => {
-  if (strength >= MIN_TENSILE_STRENGTH) return type === 'text' ? 'text-emerald-400' : 'bg-emerald-500';
-  if (strength >= NEAR_THRESHOLD) return type === 'text' ? 'text-amber-400' : 'bg-amber-500';
+const getStrengthColorClass = (strength: number, minStrength: number, type: 'text' | 'bg') => {
+  const nearThreshold = minStrength * 0.9;
+  if (strength >= minStrength) return type === 'text' ? 'text-emerald-400' : 'bg-emerald-500';
+  if (strength >= nearThreshold) return type === 'text' ? 'text-amber-400' : 'bg-amber-500';
   return type === 'text' ? 'text-red-400' : 'bg-red-500';
 };
 
-const QualityRadar = ({ rebar }: { rebar: Rebar }) => {
-  const steelInfo = STEEL_TYPES[rebar.steelType];
+const QualityRadar = ({ rebar, thresholds }: { rebar: Rebar, thresholds: any }) => {
+  const steelThresholds = thresholds[rebar.steelType];
   const report = rebar.qaReport;
   if (!report) return null;
 
@@ -321,22 +356,22 @@ const QualityRadar = ({ rebar }: { rebar: Rebar }) => {
   const data = [
     {
       subject: 'Strength',
-      value: (report.tensileStrength / steelInfo.minStrength) * 100,
+      value: (report.tensileStrength / steelThresholds.minStrength) * 100,
       fullMark: 150,
     },
     {
       subject: 'Temp',
-      value: (rebar.specs.temperature / 1200) * 100,
+      value: (1 - Math.abs(rebar.specs.temperature - 1200) / steelThresholds.maxTempDev) * 100,
       fullMark: 150,
     },
     {
       subject: 'Carbon',
-      value: ((report.composition.find(c => c.element === 'Carbon')?.percentage || 0.22) / 0.22) * 100,
+      value: ((report.composition.find(c => c.element === 'Carbon')?.percentage || 0.22) / ((steelThresholds.carbon.min + steelThresholds.carbon.max) / 2)) * 100,
       fullMark: 150,
     },
     {
       subject: 'Manganese',
-      value: ((report.composition.find(c => c.element === 'Manganese')?.percentage || 0.65) / 0.65) * 100,
+      value: ((report.composition.find(c => c.element === 'Manganese')?.percentage || 0.65) / ((steelThresholds.manganese.min + steelThresholds.manganese.max) / 2)) * 100,
       fullMark: 150,
     },
   ];
@@ -360,6 +395,263 @@ const QualityRadar = ({ rebar }: { rebar: Rebar }) => {
   );
 };
 
+const InspectionPage = ({ history, manualReject, qaThresholds }: { history: Rebar[], manualReject: (id: string) => void, qaThresholds: any }) => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const item = history.find(h => h.id === id);
+  const thresholds = item ? qaThresholds[item.steelType] : null;
+
+  if (!item) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-8">
+        <Info className="w-16 h-16 text-slate-700 mb-4" />
+        <h2 className="text-2xl font-bold mb-2">Batch Not Found</h2>
+        <p className="text-slate-400 mb-6">The production batch you are looking for does not exist or has been cleared.</p>
+        <button 
+          onClick={() => navigate('/')}
+          className="px-6 py-2 bg-blue-600 rounded-full font-medium hover:bg-blue-500 transition-colors"
+        >
+          Return to Dashboard
+        </button>
+      </div>
+    );
+  }
+
+  const steelInfo = STEEL_TYPES[item.steelType];
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-8">
+      <div className="max-w-4xl mx-auto">
+        <button 
+          onClick={() => navigate('/')}
+          className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors group"
+        >
+          <RotateCcw className="w-4 h-4 group-hover:-rotate-45 transition-transform" />
+          Back to Dashboard
+        </button>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {/* Left Column: Summary */}
+          <div className="md:col-span-1 space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
+              <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 ${item.qaStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                {item.qaStatus === 'APPROVED' ? <CheckCircle2 className="w-8 h-8" /> : <XCircle className="w-8 h-8" />}
+              </div>
+              <h1 className="text-2xl font-bold mb-1 font-mono">#{item.id.toUpperCase()}</h1>
+              <p className={`font-bold mb-4 ${item.qaStatus === 'APPROVED' ? 'text-emerald-400' : 'text-red-400'}`}>
+                STATUS: {item.qaStatus}
+              </p>
+              <div className="space-y-3 pt-4 border-t border-slate-800">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Steel Type:</span>
+                  <span className={`font-bold ${steelInfo.color}`}>{steelInfo.label}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Timestamp:</span>
+                  <span className="text-slate-300">{new Date(item.timestamp).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Shape:</span>
+                  <span className="text-slate-300">{item.specs.shape}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Length:</span>
+                  <span className="text-slate-300">{item.specs.length.toFixed(1)}m</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Initial Temp:</span>
+                  <span className="text-slate-300">{item.specs.temperature}°C</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center gap-4">
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest self-start mb-2 flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-slate-500 rounded-sm" />
+                Batch QR Code
+              </h3>
+              <div className="bg-white p-3 rounded-2xl">
+                <QRCodeCanvas value={item.id} size={120} level="H" />
+              </div>
+              <p className="text-[10px] text-slate-500 font-mono text-center">Scan to verify physical rebar authenticity</p>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <ShoppingCart className="w-4 h-4" />
+                Cost Breakdown
+              </h3>
+              <div className="space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Material:</span>
+                  <span className="text-slate-300">${item.costs.material.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Energy:</span>
+                  <span className="text-slate-300">${item.costs.energy.toFixed(2)}</span>
+                </div>
+                <div className="pt-2 border-t border-slate-800 flex justify-between text-sm font-bold">
+                  <span className="text-slate-400">Total Cost:</span>
+                  <span className="text-orange-400">${item.costs.total.toFixed(2)}</span>
+                </div>
+                {item.qaStatus === 'APPROVED' && (
+                  <div className="flex justify-between text-sm font-bold">
+                    <span className="text-slate-400">Net Profit:</span>
+                    <span className="text-purple-400">${(steelInfo.basePrice - item.costs.total).toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <Activity className="w-4 h-4" />
+                Quality Profile
+              </h3>
+              <QualityRadar rebar={item} thresholds={qaThresholds} />
+            </div>
+          </div>
+
+          {/* Right Column: Detailed Report */}
+          <div className="md:col-span-2 space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8">
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
+                <History className="w-6 h-6 text-purple-400" />
+                Process Timeline & Durations
+              </h2>
+              <div className="space-y-4">
+                {STAGES.filter(s => s.id !== 'IDLE' && s.id !== 'SALES').map((stage) => (
+                  <div key={stage.id} className="flex items-center gap-4">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${stage.color} text-white`}>
+                      {stage.icon}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-bold">{stage.label}</span>
+                        <span className="text-sm font-mono text-blue-400">
+                          {item.stageTimers[stage.id] ? `${(item.stageTimers[stage.id]! / 1000).toFixed(2)}s` : 'N/A'}
+                        </span>
+                      </div>
+                      <div className="w-full h-1 bg-slate-800 rounded-full mt-1 overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: item.stageTimers[stage.id] ? '100%' : '0%' }}
+                          className={`h-full ${stage.color}`} 
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8">
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
+                <BarChartIcon className="w-6 h-6 text-blue-400" />
+                Metallurgical Analysis Report
+              </h2>
+
+              {item.qaReport ? (
+                <div className="space-y-8">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Chemical Composition</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                      {item.qaReport.composition.map((c, i) => (
+                        <div key={i} className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50">
+                          <p className="text-slate-500 text-[10px] uppercase font-bold mb-1">{c.element}</p>
+                          <p className="text-xl font-mono font-bold text-slate-200">{c.percentage}%</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Mechanical Properties</h3>
+                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50">
+                      <div className="flex justify-between items-end mb-4">
+                        <div>
+                          <p className="text-slate-500 text-[10px] uppercase font-bold mb-1">Tensile Strength</p>
+                          <p className={`text-3xl font-mono font-bold ${getStrengthColorClass(item.qaReport.tensileStrength, thresholds.minStrength, 'text')}`}>
+                            {item.qaReport.tensileStrength.toFixed(2)} <span className="text-sm font-sans font-medium text-slate-500">MPa</span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-slate-500 text-[10px] uppercase font-bold mb-1">Min. Required</p>
+                          <p className="text-lg font-mono font-bold text-slate-400">{thresholds.minStrength} MPa</p>
+                        </div>
+                      </div>
+                      <div className="w-full h-3 bg-slate-950 rounded-full overflow-hidden relative border border-slate-800">
+                        <div className="absolute left-[62.5%] top-0 bottom-0 w-0.5 bg-white/20 z-10" />
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min((item.qaReport.tensileStrength / (thresholds.minStrength * 1.5)) * 100, 100)}%` }}
+                          className={`h-full ${item.qaReport.tensileStrength >= thresholds.minStrength ? 'bg-emerald-500' : 'bg-red-500'}`}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">AI Expert Summary</h3>
+                    <div className="bg-blue-600/5 border border-blue-500/20 p-6 rounded-2xl">
+                      <p className="text-slate-300 leading-relaxed italic mb-4">
+                        "{item.qaReport.analysis}"
+                      </p>
+
+                      {item.qaReport.malfunctions && item.qaReport.malfunctions.length > 0 && (
+                        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
+                          <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                            <Settings className="w-3 h-3" />
+                            Machine Malfunctions Detected:
+                          </p>
+                          <ul className="list-disc list-inside space-y-1">
+                            {item.qaReport.malfunctions.map((m: string, idx: number) => (
+                              <li key={idx} className="text-xs text-amber-300/80">{m}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {item.qaStatus === 'REJECTED' && item.qaReport.rejectionReasons && item.qaReport.rejectionReasons.length > 0 && (
+                        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                          <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" />
+                            Rejection Reasons:
+                          </p>
+                          <ul className="list-disc list-inside space-y-1">
+                            {item.qaReport.rejectionReasons.map((reason, idx) => (
+                              <li key={idx} className="text-xs text-red-300/80">{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      
+                      {item.qaStatus === 'APPROVED' && (
+                        <button 
+                          onClick={() => manualReject(item.id)}
+                          className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded-xl text-xs font-bold uppercase transition-colors flex items-center justify-center gap-2"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          Manual Reject Batch
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 text-slate-600">
+                  <RotateCcw className="w-12 h-12 mb-4 animate-spin-slow opacity-20" />
+                  <p>Analysis report is pending or unavailable.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -378,14 +670,145 @@ export default function App() {
   const [selectedSteelType, setSelectedSteelType] = useState<SteelType>('CARBON');
   const [totalBatches, setTotalBatches] = useState(0);
   const [hasNotifiedTarget, setHasNotifiedTarget] = useState(false);
+  const [inventory, setInventory] = useState<Record<SteelType, number>>({
+    CARBON: 50,
+    STAINLESS: 50,
+    ALLOY: 50
+  });
+  const [qaThresholds, setQaThresholds] = useState<Record<SteelType, { minStrength: number; carbon: { min: number; max: number }; manganese: { min: number; max: number }; maxTempDev: number }>>({
+    CARBON: { minStrength: 500, carbon: { min: 0.18, max: 0.25 }, manganese: { min: 0.5, max: 0.8 }, maxTempDev: 100 },
+    STAINLESS: { minStrength: 600, carbon: { min: 0.03, max: 0.08 }, manganese: { min: 1.5, max: 2.5 }, maxTempDev: 80 },
+    ALLOY: { minStrength: 550, carbon: { min: 0.3, max: 0.45 }, manganese: { min: 0.7, max: 1.1 }, maxTempDev: 90 }
+  });
+  const [energyPrice, setEnergyPrice] = useState(0.12); // Base price $/unit
+  const [totalRestockCost, setTotalRestockCost] = useState(0);
+  const [stageStartTime, setStageStartTime] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [autoReplenishConfig, setAutoReplenishConfig] = useState<Record<SteelType, { threshold: number; amount: number; enabled: boolean }>>({
+    CARBON: { threshold: 10, amount: 50, enabled: false },
+    STAINLESS: { threshold: 10, amount: 50, enabled: false },
+    ALLOY: { threshold: 10, amount: 50, enabled: false }
+  });
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [machineHealth, setMachineHealth] = useState<Record<MachineId, number>>({
+    HEATING: 100,
+    RECTANGULAR_MOLD: 100,
+    SQUARING: 100,
+    GROVE_CIRCLE: 100,
+    SIZING: 100
+  });
+  const [maintenanceSchedules, setMaintenanceSchedules] = useState<Record<MachineId, MaintenanceSchedule>>({
+    HEATING: { batchesSinceLast: 0, threshold: 50, enabled: true },
+    RECTANGULAR_MOLD: { batchesSinceLast: 0, threshold: 50, enabled: true },
+    SQUARING: { batchesSinceLast: 0, threshold: 50, enabled: true },
+    GROVE_CIRCLE: { batchesSinceLast: 0, threshold: 50, enabled: true },
+    SIZING: { batchesSinceLast: 0, threshold: 50, enabled: true }
+  });
+  const lowInventoryNotified = useRef<Set<SteelType>>(new Set());
+  const lowHealthNotified = useRef<Set<MachineId>>(new Set());
+
+  // Machine health background degradation over time
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMachineHealth(prev => {
+        const next = { ...prev };
+        let changed = false;
+        (Object.keys(next) as MachineId[]).forEach(mId => {
+          const decay = 0.001 * simSpeed; // Very slow background decay
+          if (next[mId] > 0) {
+            next[mId] = Math.max(0, next[mId] - decay);
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [simSpeed]);
+
+  const addNotification = (type: string, message: string) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    setNotifications(prev => [{ id, type, message, timestamp: Date.now() }, ...prev].slice(0, 5));
+  };
+
+  const dismissNotification = (id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  };
+
+  const performMaintenance = (machineId: MachineId) => {
+    const cost = 500; // Flat repair cost
+    if (stats.revenue < cost) {
+      addNotification('MAINTENANCE_ERROR', `Insufficient funds for maintenance ($${cost} required).`);
+      return;
+    }
+    
+    setMachineHealth(prev => ({ ...prev, [machineId]: 100 }));
+    setMaintenanceSchedules(prev => ({
+      ...prev,
+      [machineId]: { ...prev[machineId], batchesSinceLast: 0 }
+    }));
+    setHistory(prev => {
+      // Deduct from revenue by adding to restock cost or similar (let's just deduct from stats if we had a balance)
+      // Actually, let's just track it in totalRestockCost for now as "Maintenance/Restock"
+      return prev;
+    });
+    setTotalRestockCost(prev => prev + cost);
+    lowHealthNotified.current.delete(machineId);
+    if (!isMuted) audio.playSale();
+    addNotification('MAINTENANCE_DONE', `${STAGES.find(s => s.id === machineId)?.label} maintenance complete.`);
+  };
+
+  // Inventory Monitoring & Auto-Replenishment Effect
+  useEffect(() => {
+    (Object.keys(inventory) as SteelType[]).forEach(type => {
+      const config = autoReplenishConfig[type];
+      if (inventory[type] <= config.threshold) {
+        if (!lowInventoryNotified.current.has(type)) {
+          addNotification(`LOW_INVENTORY_${type}`, `Low Inventory: ${STEEL_TYPES[type].label} is below threshold (${inventory[type]} units remaining).`);
+          lowInventoryNotified.current.add(type);
+          if (!isMuted) audio.playQA(false);
+        }
+
+        if (config.enabled) {
+          const cost = config.amount * STEEL_TYPES[type].restockCost;
+          setInventory(prev => ({ ...prev, [type]: prev[type] + config.amount }));
+          setTotalRestockCost(prev => prev + cost);
+          if (!isMuted) audio.playSale(); // Re-use sale sound for restock
+        }
+      } else {
+        lowInventoryNotified.current.delete(type);
+      }
+    });
+  }, [inventory, autoReplenishConfig, isMuted]);
+
+  // Fluctuating Energy Price Effect
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setEnergyPrice(prev => {
+        const fluctuation = (Math.random() - 0.5) * 0.02;
+        return Math.max(0.05, Math.min(0.25, prev + fluctuation));
+      });
+    }, 5000); // Update every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
 
   const performAIAnalysis = async (rebar: Rebar) => {
     setIsAnalyzing(true);
     const steelInfo = STEEL_TYPES[rebar.steelType];
+    const thresholds = qaThresholds[rebar.steelType];
     try {
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Analyze this ${steelInfo.label} batch for composition and tensile strength. The required minimum tensile strength for this type is ${steelInfo.minStrength} MPa. Provide a realistic metallurgical report.`,
+        contents: `Analyze this ${steelInfo.label} batch for composition and tensile strength. 
+        Required thresholds for this batch:
+        - Minimum Tensile Strength: ${thresholds.minStrength} MPa
+        - Carbon Range: ${thresholds.carbon.min}% - ${thresholds.carbon.max}%
+        - Manganese Range: ${thresholds.manganese.min}% - ${thresholds.manganese.max}%
+        - Target Temperature: 1200°C (Max deviation: ${thresholds.maxTempDev}°C)
+        
+        ${rebar.qaReport?.malfunctions?.length ? `CRITICAL: The following machine malfunctions occurred during production: ${rebar.qaReport.malfunctions.join(', ')}. These MUST be reflected in the report and likely cause rejection.` : ''}
+
+        Provide a realistic metallurgical report. If the batch is rejected (isApproved: false), specify exactly which parameters failed in the rejectionReasons array (e.g., ["Tensile strength below minimum", "Carbon content too high"]).`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -404,7 +827,12 @@ export default function App() {
               },
               tensileStrength: { type: Type.NUMBER, description: "Tensile strength in MPa" },
               analysis: { type: Type.STRING, description: "Brief metallurgical summary" },
-              isApproved: { type: Type.BOOLEAN }
+              isApproved: { type: Type.BOOLEAN },
+              rejectionReasons: { 
+                type: Type.ARRAY, 
+                items: { type: Type.STRING },
+                description: "List of specific reasons for rejection if isApproved is false. Empty if approved."
+              }
             },
             required: ["composition", "tensileStrength", "analysis", "isApproved"]
           }
@@ -417,7 +845,9 @@ export default function App() {
         qaReport: {
           composition: report.composition,
           tensileStrength: report.tensileStrength,
-          analysis: report.analysis
+          analysis: report.analysis,
+          rejectionReasons: report.rejectionReasons || [],
+          malfunctions: rebar.qaReport?.malfunctions || []
         }
       };
     } catch (error) {
@@ -432,7 +862,8 @@ export default function App() {
             { element: 'Manganese', percentage: 0.65 }
           ],
           tensileStrength: 450 + Math.random() * 100,
-          analysis: "Standard inspection performed (AI Fallback)."
+          analysis: "Standard inspection performed (AI Fallback).",
+          rejectionReasons: approved ? [] : ["Parameter deviation detected (Fallback)"]
         }
       };
     } finally {
@@ -443,6 +874,18 @@ export default function App() {
   const startProcess = () => {
     if (currentStage !== 'IDLE') return;
     
+    // Check inventory
+    if (inventory[selectedSteelType] <= 0) {
+      return;
+    }
+
+    const steelTypeInfo = STEEL_TYPES[selectedSteelType];
+    // Energy cost calculation: Base cost to heat + duration factor
+    // Duration is inversely proportional to (initialTemp/1200 * heatingFactor)
+    const heatingDurationFactor = 1 / ((initialTemp / 1200) * steelTypeInfo.heatingFactor);
+    const energyCost = (initialTemp * energyPrice) + (heatingDurationFactor * 40);
+    const materialCost = steelTypeInfo.materialCost;
+
     const newSteel: Rebar = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
       timestamp: Date.now(),
@@ -452,11 +895,24 @@ export default function App() {
         length: 0,
         shape: 'RECTANGLE',
         temperature: initialTemp
-      }
+      },
+      costs: {
+        material: materialCost,
+        energy: energyCost,
+        total: materialCost + energyCost
+      },
+      stageTimers: {}
     };
     
+    // Deduct from inventory
+    setInventory(prev => ({
+      ...prev,
+      [selectedSteelType]: prev[selectedSteelType] - 1
+    }));
+
     setCurrentSteel(newSteel);
     setCurrentStage('HEATING');
+    setStageStartTime(Date.now());
     setProgress(0);
   };
 
@@ -466,10 +922,58 @@ export default function App() {
 
     if (currentIndex < STAGES.length - 1) {
       const nextS = STAGES[currentIndex + 1].id;
+      const now = Date.now();
+      const duration = now - stageStartTime;
       
       // Update steel specs based on stage
       if (currentSteel) {
         let updatedSteel = { ...currentSteel };
+        updatedSteel.stageTimers = {
+          ...updatedSteel.stageTimers,
+          [currentStage]: duration
+        };
+
+        // Check for malfunctions when leaving a stage
+        if (currentStage in machineHealth) {
+          const mId = currentStage as MachineId;
+          const health = machineHealth[mId];
+          
+          // Apply batch completion decay
+          setMachineHealth(prev => ({
+            ...prev,
+            [mId]: Math.max(0, prev[mId] - 2) // 2% per batch stage
+          }));
+
+          // Proactive maintenance increment
+          setMaintenanceSchedules(prev => {
+            const newCount = prev[mId].batchesSinceLast + 1;
+            if (prev[mId].enabled && newCount === prev[mId].threshold) {
+              addNotification(`MAINTENANCE_DUE_${mId}`, `Maintenance Due: ${STAGES.find(s => s.id === mId)?.label} has reached its scheduled maintenance threshold (${prev[mId].threshold} batches).`);
+            }
+            return {
+              ...prev,
+              [mId]: { ...prev[mId], batchesSinceLast: newCount }
+            };
+          });
+
+          // More aggressive malfunction chance at lower health
+          let malfunctionChance = 0;
+          if (health < 20) malfunctionChance = (100 - health) / 100; // Up to 100%
+          else if (health < 50) malfunctionChance = (100 - health) / 200; // Up to 40%
+          else malfunctionChance = (100 - health) / 500; // Up to 10%
+
+          if (Math.random() < malfunctionChance) {
+            const mLabel = STAGES.find(s => s.id === currentStage)?.label;
+            const malfunctions = updatedSteel.qaReport?.malfunctions || [];
+            updatedSteel.qaReport = {
+              ...updatedSteel.qaReport!,
+              malfunctions: [...malfunctions, `${mLabel} Malfunction`]
+            };
+            addNotification('MALFUNCTION', `Warning: ${mLabel} malfunction detected during processing!`);
+            if (!isMuted) audio.playQA(false);
+          }
+        }
+        
         if (nextS === 'SQUARING') updatedSteel.specs.shape = 'SQUARE' as const;
         if (nextS === 'GROVE_CIRCLE') updatedSteel.specs.shape = 'CIRCLE' as const;
         if (nextS === 'SIZING') updatedSteel.specs.length = 3;
@@ -482,22 +986,33 @@ export default function App() {
       }
 
       setCurrentStage(nextS);
+      setStageStartTime(now);
       setProgress(0);
     } else {
       // Process complete
       if (currentSteel) {
+        const now = Date.now();
+        const duration = now - stageStartTime;
+        const finalSteel = {
+          ...currentSteel,
+          stageTimers: {
+            ...currentSteel.stageTimers,
+            [currentStage]: duration
+          }
+        };
         setTotalBatches(prev => prev + 1);
         setHistory(prev => {
           // Prevent duplicate entries with the same ID
-          if (prev.some(item => item.id === currentSteel.id)) return prev;
-          return [currentSteel, ...prev].slice(0, 50);
+          if (prev.some(item => item.id === finalSteel.id)) return prev;
+          return [finalSteel, ...prev].slice(0, 50);
         });
       }
       setCurrentStage('IDLE');
       setCurrentSteel(null);
+      setStageStartTime(0);
       setProgress(0);
     }
-  }, [currentStage, currentSteel]);
+  }, [currentStage, currentSteel, stageStartTime, machineHealth, isMuted, addNotification, maintenanceSchedules]);
 
   // Handle Sound Effects
   useEffect(() => {
@@ -530,7 +1045,22 @@ export default function App() {
     let interval: NodeJS.Timeout;
     if (currentStage !== 'IDLE') {
       interval = setInterval(() => {
+        setCurrentTime(Date.now());
         let increment = 5 * simSpeed;
+        
+        // Machine health degradation (active use)
+        if (currentStage in machineHealth) {
+          const mId = currentStage as MachineId;
+          setMachineHealth(prev => {
+            const newHealth = Math.max(0, prev[mId] - (0.05 * simSpeed)); // Increased active decay
+            if (newHealth < 20 && !lowHealthNotified.current.has(mId)) {
+              addNotification(`LOW_HEALTH_${mId}`, `Critical Health: ${STAGES.find(s => s.id === mId)?.label} health is below 20%!`);
+              lowHealthNotified.current.add(mId);
+            }
+            return { ...prev, [mId]: newHealth };
+          });
+        }
+
         if (currentStage === 'HEATING') {
           // Higher temp = faster heating (shorter duration)
           // 1200 is baseline. 1500 is faster, 100 is slower.
@@ -574,16 +1104,72 @@ export default function App() {
     setIsAnalyzing(false);
   };
 
+  const manualReject = (id: string) => {
+    setHistory(prev => prev.map(item => {
+      if (item.id === id) {
+        if (!isMuted) audio.playQA(false);
+        return { ...item, qaStatus: 'REJECTED' };
+      }
+      return item;
+    }));
+    
+    if (currentSteel && currentSteel.id === id) {
+      setCurrentSteel(prev => prev ? { ...prev, qaStatus: 'REJECTED' } : null);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (history.length === 0) return;
+    
+    const headers = ['ID', 'Timestamp', 'Steel Type', 'QA Status', 'Temperature (C)', 'Tensile Strength (MPa)', 'Material Cost ($)', 'Energy Cost ($)', 'Total Cost ($)'];
+    const rows = history.map(item => [
+      item.id,
+      new Date(item.timestamp).toISOString(),
+      item.steelType,
+      item.qaStatus,
+      item.specs.temperature,
+      item.qaReport?.tensileStrength || 'N/A',
+      item.costs.material,
+      item.costs.energy,
+      item.costs.total
+    ]);
+
+    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `production_log_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportToJSON = () => {
+    if (history.length === 0) return;
+    const blob = new Blob([JSON.stringify(history, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `production_log_${new Date().toISOString().split('T')[0]}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const stats = {
     total: history.length,
     approved: history.filter(r => r.qaStatus === 'APPROVED').length,
     rejected: history.filter(r => r.qaStatus === 'REJECTED').length,
-    revenue: history.filter(r => r.qaStatus === 'APPROVED').reduce((acc, r) => acc + STEEL_TYPES[r.steelType].basePrice, 0)
+    revenue: history.filter(r => r.qaStatus === 'APPROVED').reduce((acc, r) => acc + STEEL_TYPES[r.steelType].basePrice, 0),
+    totalCost: history.reduce((acc, r) => acc + r.costs.total, 0) + totalRestockCost,
+    profit: history.filter(r => r.qaStatus === 'APPROVED').reduce((acc, r) => acc + STEEL_TYPES[r.steelType].basePrice, 0) - (history.reduce((acc, r) => acc + r.costs.total, 0) + totalRestockCost)
   };
 
   useEffect(() => {
     if (stats.approved >= salesTarget && !hasNotifiedTarget && salesTarget > 0) {
       if (!isMuted) audio.playTargetAchieved();
+      addNotification('TARGET_ACHIEVED', `Congratulations! Daily Sales Target of ${salesTarget} units achieved.`);
       setHasNotifiedTarget(true);
     } else if (stats.approved < salesTarget) {
       setHasNotifiedTarget(false);
@@ -591,7 +1177,101 @@ export default function App() {
   }, [stats.approved, salesTarget, hasNotifiedTarget, isMuted]);
 
   return (
+    <Router>
+      <Routes>
+        <Route path="/" element={
+          <Dashboard 
+            currentStage={currentStage}
+            history={history}
+            isAuto={isAuto}
+            setIsAuto={setIsAuto}
+            isMuted={isMuted}
+            setIsMuted={setIsMuted}
+            progress={progress}
+            currentSteel={currentSteel}
+            simSpeed={simSpeed}
+            setSimSpeed={setSimSpeed}
+            isAnalyzing={isAnalyzing}
+            salesTarget={salesTarget}
+            setSalesTarget={setSalesTarget}
+            initialTemp={initialTemp}
+            setInitialTemp={setInitialTemp}
+            selectedSteelType={selectedSteelType}
+            setSelectedSteelType={setSelectedSteelType}
+            totalBatches={totalBatches}
+            startProcess={startProcess}
+            rerunQA={rerunQA}
+            stats={stats}
+            inventory={inventory}
+            setInventory={setInventory}
+            energyPrice={energyPrice}
+            autoReplenishConfig={autoReplenishConfig}
+            setAutoReplenishConfig={setAutoReplenishConfig}
+            manualReject={manualReject}
+            qaThresholds={qaThresholds}
+            setQaThresholds={setQaThresholds}
+            exportToCSV={exportToCSV}
+            exportToJSON={exportToJSON}
+            currentTime={currentTime}
+            stageStartTime={stageStartTime}
+            notifications={notifications}
+            dismissNotification={dismissNotification}
+            machineHealth={machineHealth}
+            performMaintenance={performMaintenance}
+            maintenanceSchedules={maintenanceSchedules}
+            setMaintenanceSchedules={setMaintenanceSchedules}
+          />
+        } />
+        <Route path="/inspect/:id" element={<InspectionPage history={history} manualReject={manualReject} qaThresholds={qaThresholds} />} />
+      </Routes>
+    </Router>
+  );
+}
+
+function Dashboard({ 
+  currentStage, history, isAuto, setIsAuto, isMuted, setIsMuted, 
+  progress, currentSteel, simSpeed, setSimSpeed, isAnalyzing, 
+  salesTarget, setSalesTarget, initialTemp, setInitialTemp, 
+  selectedSteelType, setSelectedSteelType, totalBatches, 
+  startProcess, rerunQA, stats, inventory, setInventory, energyPrice,
+  autoReplenishConfig, setAutoReplenishConfig, manualReject,
+  qaThresholds, setQaThresholds, exportToCSV, exportToJSON,
+  currentTime, stageStartTime, notifications, dismissNotification,
+  machineHealth, performMaintenance, maintenanceSchedules, setMaintenanceSchedules
+}: any) {
+  return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-8">
+      {/* Notifications */}
+      <div className="max-w-7xl mx-auto mb-6 space-y-2">
+        <AnimatePresence>
+          {notifications.map((n: any) => (
+            <motion.div
+              key={n.id}
+              initial={{ opacity: 0, y: -20, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: 'auto' }}
+              exit={{ opacity: 0, x: 100 }}
+              className={`${n.type === 'TARGET_ACHIEVED' ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30'} p-4 rounded-2xl flex items-center justify-between gap-4 backdrop-blur-md`}
+            >
+              <div className="flex items-center gap-3">
+                <div className={`p-2 ${n.type === 'TARGET_ACHIEVED' ? 'bg-emerald-500/20' : 'bg-red-500/20'} rounded-lg`}>
+                  {n.type === 'TARGET_ACHIEVED' ? <CheckCircle2 className="w-5 h-5 text-emerald-500" /> : <AlertTriangle className="w-5 h-5 text-red-500" />}
+                </div>
+                <div>
+                  <p className={`text-sm font-bold ${n.type === 'TARGET_ACHIEVED' ? 'text-emerald-400' : 'text-red-400'}`}>{n.message}</p>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-widest">{new Date(n.timestamp).toLocaleTimeString()}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => dismissNotification(n.id)}
+                className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
       {/* Header */}
       <header className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -689,7 +1369,7 @@ export default function App() {
           
           <button
             onClick={startProcess}
-            disabled={currentStage !== 'IDLE'}
+            disabled={currentStage !== 'IDLE' || inventory[selectedSteelType] <= 0}
             className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-full font-medium transition-all shadow-lg shadow-blue-900/20"
           >
             <Play className="w-4 h-4 fill-current" />
@@ -698,9 +1378,128 @@ export default function App() {
         </div>
       </header>
 
+      {/* Energy Price Ticker */}
+      <div className="max-w-7xl mx-auto mb-8">
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center justify-between backdrop-blur-md">
+          <div className="flex items-center gap-4">
+            <div className="p-2 bg-yellow-500/10 rounded-lg">
+              <Activity className="w-5 h-5 text-yellow-500" />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Live Energy Market</p>
+              <p className="text-lg font-mono font-bold text-yellow-500">${energyPrice.toFixed(4)} <span className="text-xs font-sans text-slate-500">/ unit</span></p>
+            </div>
+          </div>
+          <div className="hidden md:flex items-center gap-8 text-[10px] font-bold uppercase tracking-tighter text-slate-500">
+            <div className="flex flex-col">
+              <span>Peak Demand</span>
+              <span className="text-slate-300">14.2 GW</span>
+            </div>
+            <div className="flex flex-col">
+              <span>Grid Stability</span>
+              <span className="text-emerald-500">98.4%</span>
+            </div>
+            <div className="flex flex-col">
+              <span>Next Update</span>
+              <span className="text-slate-300">Real-time</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Production Line Visualization */}
         <div className="lg:col-span-2 space-y-8">
+          {/* Machine Health Section */}
+          <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Activity className="w-6 h-6 text-emerald-400" />
+                Machine Health & Maintenance
+              </h2>
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+                Repair Cost: $500 / Machine
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {(Object.keys(machineHealth) as MachineId[]).map((mId) => {
+                const stage = STAGES.find(s => s.id === mId);
+                const health = machineHealth[mId];
+                return (
+                  <div key={mId} className="bg-slate-800/30 border border-slate-700/30 p-4 rounded-2xl hover:bg-slate-800/50 transition-colors">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${stage?.color} text-white shadow-lg`}>
+                          {stage?.icon}
+                        </div>
+                        <span className="text-xs font-bold">{stage?.label}</span>
+                      </div>
+                      <span className={`text-xs font-mono font-bold ${health < 20 ? 'text-red-500' : health < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                        {Math.floor(health)}%
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden mb-4 border border-slate-800">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${health}%` }}
+                        className={`h-full ${health < 20 ? 'bg-red-500' : health < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                      />
+                    </div>
+                    <button 
+                      onClick={() => performMaintenance(mId)}
+                      disabled={health > 95}
+                      className={`w-full py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all mb-3 ${
+                        health > 95 
+                          ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed' 
+                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20'
+                      }`}
+                    >
+                      {health > 95 ? 'Optimal' : 'Perform Maintenance'}
+                    </button>
+
+                    <div className="pt-3 border-t border-slate-700/50">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">Proactive Schedule</span>
+                        <button 
+                          onClick={() => setMaintenanceSchedules((prev: any) => ({
+                            ...prev,
+                            [mId]: { ...prev[mId], enabled: !prev[mId].enabled }
+                          }))}
+                          className={`w-4 h-4 rounded flex items-center justify-center transition-colors ${maintenanceSchedules[mId].enabled ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-500'}`}
+                        >
+                          <Bell className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-slate-950 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-blue-500/50 transition-all duration-500" 
+                            style={{ width: `${Math.min((maintenanceSchedules[mId].batchesSinceLast / maintenanceSchedules[mId].threshold) * 100, 100)}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input 
+                            type="number"
+                            value={maintenanceSchedules[mId].threshold}
+                            onChange={(e) => setMaintenanceSchedules((prev: any) => ({
+                              ...prev,
+                              [mId]: { ...prev[mId], threshold: Math.max(1, parseInt(e.target.value) || 1) }
+                            }))}
+                            className="w-8 bg-slate-950 text-[10px] text-blue-400 font-mono text-center rounded border border-slate-700 focus:outline-none"
+                          />
+                          <span className="text-[8px] text-slate-600 uppercase font-bold">Batches</span>
+                        </div>
+                      </div>
+                      <p className="text-[8px] text-slate-500 mt-1">
+                        {maintenanceSchedules[mId].batchesSinceLast} / {maintenanceSchedules[mId].threshold} batches processed
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
           <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-8 overflow-hidden relative">
             <h2 className="text-xl font-semibold mb-8 flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-blue-400" />
@@ -713,6 +1512,7 @@ export default function App() {
                 {STAGES.map((stage, idx) => {
                   const isActive = currentStage === stage.id;
                   const isCompleted = STAGES.findIndex(s => s.id === currentStage) > idx;
+                  const health = machineHealth[stage.id as MachineId] ?? 100;
                   
                   return (
                     <div key={stage.id} className="flex flex-col items-center text-center group relative">
@@ -720,19 +1520,30 @@ export default function App() {
                       <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-48 p-2 bg-slate-800 text-slate-200 text-[10px] rounded-lg border border-slate-700 shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
                         <p className="font-bold text-blue-400 mb-1">{stage.label}</p>
                         {stage.description}
+                        <p className={`mt-1 font-bold ${health < 20 ? 'text-red-500' : health < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                          Health: {Math.floor(health)}%
+                        </p>
                         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-800 border-r border-b border-slate-700 rotate-45" />
                       </div>
 
-                      <div className={`
-                        relative w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-500
-                        ${isActive ? `${stage.color} scale-110 shadow-2xl shadow-${stage.color.split('-')[1]}-500/50` : 'bg-slate-800'}
-                        ${isCompleted ? 'border-2 border-emerald-500/50' : 'border border-slate-700'}
-                      `}>
+                      <motion.div 
+                        animate={health < 20 ? { x: [0, -2, 2, -2, 2, 0] } : {}}
+                        transition={health < 20 ? { repeat: Infinity, duration: 0.2 } : {}}
+                        className={`
+                          relative w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-500
+                          ${isActive ? `${stage.color} scale-110 shadow-2xl shadow-${stage.color.split('-')[1]}-500/50` : 'bg-slate-800'}
+                          ${isCompleted ? 'border-2 border-emerald-500/50' : 'border border-slate-700'}
+                          ${health < 20 ? 'ring-2 ring-red-500 ring-offset-2 ring-offset-slate-950' : health < 50 ? 'ring-1 ring-amber-500/50' : ''}
+                        `}
+                      >
                         {isCompleted ? (
                           <CheckCircle2 className="w-6 h-6 text-emerald-400" />
                         ) : (
                           <div className={isActive ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'}>
                             {stage.icon}
+                            {health < 50 && !isActive && (
+                              <AlertTriangle className={`absolute -top-1 -right-1 w-4 h-4 ${health < 20 ? 'text-red-500' : 'text-amber-500'}`} />
+                            )}
                           </div>
                         )}
                         
@@ -743,10 +1554,15 @@ export default function App() {
                             animate={{ width: `${progress}%` }}
                           />
                         )}
-                      </div>
+                      </motion.div>
                       <span className={`mt-3 text-xs font-medium uppercase tracking-wider ${isActive ? 'text-white' : 'text-slate-500'}`}>
                         {stage.label}
                       </span>
+                      {isActive && (
+                        <span className="text-[10px] font-mono text-blue-400 mt-1">
+                          {((currentTime - stageStartTime) / 1000).toFixed(1)}s
+                        </span>
+                      )}
                     </div>
                   );
                 })}
@@ -842,7 +1658,7 @@ export default function App() {
                                 </div>
                                 <div className="flex justify-between mb-1">
                                   <span className="text-slate-500">Tensile Strength:</span>
-                                  <span className={`font-mono font-bold ${getStrengthColorClass(currentSteel.qaReport.tensileStrength, 'text')}`}>
+                                  <span className={`font-mono font-bold ${getStrengthColorClass(currentSteel.qaReport.tensileStrength, qaThresholds[currentSteel.steelType].minStrength, 'text')}`}>
                                     {currentSteel.qaReport.tensileStrength.toFixed(0)} MPa
                                   </span>
                                 </div>
@@ -850,24 +1666,34 @@ export default function App() {
                                   {/* Threshold Marker */}
                                   <div 
                                     className="absolute left-[62.5%] top-0 bottom-0 w-0.5 bg-white/40 z-10" 
-                                    title="High Quality Threshold: 500 MPa" 
+                                    title={`Min Required: ${qaThresholds[currentSteel.steelType].minStrength} MPa`} 
                                   />
                                   <motion.div 
                                     initial={{ width: 0 }}
-                                    animate={{ width: `${Math.min((currentSteel.qaReport.tensileStrength / 800) * 100, 100)}%` }}
-                                    className={`h-full ${getStrengthColorClass(currentSteel.qaReport.tensileStrength, 'bg')}`}
+                                    animate={{ width: `${Math.min((currentSteel.qaReport.tensileStrength / (qaThresholds[currentSteel.steelType].minStrength * 1.5)) * 100, 100)}%` }}
+                                    className={`h-full ${getStrengthColorClass(currentSteel.qaReport.tensileStrength, qaThresholds[currentSteel.steelType].minStrength, 'bg')}`}
                                   />
                                 </div>
                                 <p className="text-slate-400 italic leading-tight border-t border-slate-700 pt-1">
                                   {currentSteel.qaReport.analysis}
                                 </p>
                                 
+                                {currentSteel.qaStatus === 'APPROVED' && (
+                                  <button 
+                                    onClick={() => manualReject(currentSteel.id)}
+                                    className="mt-3 w-full py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg text-[9px] font-bold uppercase transition-colors flex items-center justify-center gap-1"
+                                  >
+                                    <XCircle className="w-3 h-3" />
+                                    Manual Reject Batch
+                                  </button>
+                                )}
+
                                 <div className="border-t border-slate-700 mt-2 pt-2">
                                   <p className="text-[9px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
                                     <Activity className="w-3 h-3" />
                                     Quality Profile (vs Target)
                                   </p>
-                                  <QualityRadar rebar={currentSteel} />
+                                  <QualityRadar rebar={currentSteel} thresholds={qaThresholds} />
                                 </div>
                               </div>
                             )}
@@ -921,15 +1747,201 @@ export default function App() {
             </div>
           </section>
 
+          {/* Inventory Management */}
+          <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-8">
+            <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+              <History className="w-5 h-5 text-purple-400" />
+              Steel Inventory
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {(Object.keys(STEEL_TYPES) as SteelType[]).map((type) => (
+                <div key={type} className="bg-slate-800/50 border border-slate-700/50 p-4 rounded-2xl">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className={`text-xs font-bold uppercase tracking-wider ${STEEL_TYPES[type].color}`}>
+                      {STEEL_TYPES[type].label}
+                    </span>
+                    <span className={`text-lg font-mono font-bold ${inventory[type] < 5 ? 'text-red-500' : 'text-slate-200'}`}>
+                      {inventory[type]} Units
+                    </span>
+                  </div>
+                  
+                  <div className="flex gap-2 mb-4">
+                    <input
+                      type="number"
+                      min="0"
+                      value={inventory[type]}
+                      onChange={(e) => {
+                        const val = Math.max(0, parseInt(e.target.value) || 0);
+                        setInventory((prev: any) => ({ ...prev, [type]: val }));
+                      }}
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      onClick={() => setInventory((prev: any) => ({ ...prev, [type]: prev[type] + 10 }))}
+                      className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-[10px] font-bold uppercase transition-colors"
+                    >
+                      +10
+                    </button>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-700/50 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-slate-500 uppercase font-bold">Auto-Replenish</span>
+                      <button 
+                        onClick={() => setAutoReplenishConfig((prev: any) => ({
+                          ...prev,
+                          [type]: { ...prev[type], enabled: !prev[type].enabled }
+                        }))}
+                        className={`w-8 h-4 rounded-full relative transition-colors ${autoReplenishConfig[type].enabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                      >
+                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${autoReplenishConfig[type].enabled ? 'left-4.5' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                    
+                    {autoReplenishConfig[type].enabled && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-[8px] text-slate-500 uppercase mb-1">Threshold</p>
+                          <input 
+                            type="number"
+                            value={autoReplenishConfig[type].threshold}
+                            onChange={(e) => setAutoReplenishConfig((prev: any) => ({
+                              ...prev,
+                              [type]: { ...prev[type], threshold: Math.max(0, parseInt(e.target.value) || 0) }
+                            }))}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <p className="text-[8px] text-slate-500 uppercase mb-1">Amount</p>
+                          <input 
+                            type="number"
+                            value={autoReplenishConfig[type].amount}
+                            onChange={(e) => setAutoReplenishConfig((prev: any) => ({
+                              ...prev,
+                              [type]: { ...prev[type], amount: Math.max(1, parseInt(e.target.value) || 1) }
+                            }))}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* QA Threshold Configuration */}
+          <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-8">
+            <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+              <Settings className="w-5 h-5 text-blue-400" />
+              QA Threshold Configuration
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {(Object.keys(STEEL_TYPES) as SteelType[]).map((type) => (
+                <div key={type} className="bg-slate-800/50 border border-slate-700/50 p-4 rounded-2xl space-y-4">
+                  <div className="flex justify-between items-center">
+                    <span className={`text-xs font-bold uppercase tracking-wider ${STEEL_TYPES[type].color}`}>
+                      {STEEL_TYPES[type].label}
+                    </span>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Min Strength (MPa)</p>
+                      <input 
+                        type="number"
+                        value={qaThresholds[type].minStrength}
+                        onChange={(e) => setQaThresholds((prev: any) => ({
+                          ...prev,
+                          [type]: { ...prev[type], minStrength: parseInt(e.target.value) || 0 }
+                        }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Carbon Min %</p>
+                        <input 
+                          type="number"
+                          step="0.01"
+                          value={qaThresholds[type].carbon.min}
+                          onChange={(e) => setQaThresholds((prev: any) => ({
+                            ...prev,
+                            [type]: { ...prev[type], carbon: { ...prev[type].carbon, min: parseFloat(e.target.value) || 0 } }
+                          }))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Carbon Max %</p>
+                        <input 
+                          type="number"
+                          step="0.01"
+                          value={qaThresholds[type].carbon.max}
+                          onChange={(e) => setQaThresholds((prev: any) => ({
+                            ...prev,
+                            [type]: { ...prev[type], carbon: { ...prev[type].carbon, max: parseFloat(e.target.value) || 0 } }
+                          }))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Mang. Min %</p>
+                        <input 
+                          type="number"
+                          step="0.01"
+                          value={qaThresholds[type].manganese.min}
+                          onChange={(e) => setQaThresholds((prev: any) => ({
+                            ...prev,
+                            [type]: { ...prev[type], manganese: { ...prev[type].manganese, min: parseFloat(e.target.value) || 0 } }
+                          }))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Mang. Max %</p>
+                        <input 
+                          type="number"
+                          step="0.01"
+                          value={qaThresholds[type].manganese.max}
+                          onChange={(e) => setQaThresholds((prev: any) => ({
+                            ...prev,
+                            [type]: { ...prev[type], manganese: { ...prev[type].manganese, max: parseFloat(e.target.value) || 0 } }
+                          }))}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Max Temp Dev (°C)</p>
+                      <input 
+                        type="number"
+                        value={qaThresholds[type].maxTempDev}
+                        onChange={(e) => setQaThresholds((prev: any) => ({
+                          ...prev,
+                          [type]: { ...prev[type], maxTempDev: parseInt(e.target.value) || 0 }
+                        }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {/* Stats Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
               <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Batches</p>
               <p className="text-3xl font-bold">{totalBatches}</p>
-            </div>
-            <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
-              <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Produced</p>
-              <p className="text-3xl font-bold">{stats.total}</p>
             </div>
             <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
               <p className="text-emerald-500 text-xs font-bold uppercase tracking-wider mb-1">Approved</p>
@@ -940,8 +1952,18 @@ export default function App() {
               <p className="text-3xl font-bold text-red-400">{stats.rejected}</p>
             </div>
             <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
-              <p className="text-blue-500 text-xs font-bold uppercase tracking-wider mb-1">Est. Revenue</p>
+              <p className="text-orange-500 text-xs font-bold uppercase tracking-wider mb-1">Total Cost</p>
+              <p className="text-3xl font-bold text-orange-400">${Math.round(stats.totalCost).toLocaleString()}</p>
+            </div>
+            <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
+              <p className="text-blue-500 text-xs font-bold uppercase tracking-wider mb-1">Revenue</p>
               <p className="text-3xl font-bold text-blue-400">${stats.revenue.toLocaleString()}</p>
+            </div>
+            <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl">
+              <p className="text-purple-500 text-xs font-bold uppercase tracking-wider mb-1">Net Profit</p>
+              <p className={`text-3xl font-bold ${stats.profit >= 0 ? 'text-purple-400' : 'text-red-400'}`}>
+                ${Math.round(stats.profit).toLocaleString()}
+              </p>
             </div>
           </div>
         </div>
@@ -949,10 +1971,32 @@ export default function App() {
         {/* Sidebar: History & Info */}
         <div className="space-y-8">
           <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 flex flex-col h-[600px]">
-            <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
-              <History className="w-5 h-5 text-purple-400" />
-              Production Log
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold flex items-center gap-2">
+                <History className="w-5 h-5 text-purple-400" />
+                Production Log
+              </h2>
+              <div className="flex gap-2">
+                <button 
+                  onClick={exportToCSV}
+                  disabled={history.length === 0}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-slate-400 hover:text-blue-400 transition-colors"
+                  title="Export to CSV"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="sr-only">CSV</span>
+                </button>
+                <button 
+                  onClick={exportToJSON}
+                  disabled={history.length === 0}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-slate-400 hover:text-purple-400 transition-colors"
+                  title="Export to JSON"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="sr-only">JSON</span>
+                </button>
+              </div>
+            </div>
             
             <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
               {history.length === 0 ? (
@@ -962,7 +2006,11 @@ export default function App() {
                 </div>
               ) : (
                 history.map((item) => (
-                  <div key={item.id} className="bg-slate-800/50 border border-slate-700/50 p-4 rounded-xl flex flex-col gap-3 group hover:bg-slate-800 transition-colors">
+                  <Link 
+                    to={`/inspect/${item.id}`} 
+                    key={item.id} 
+                    className="bg-slate-800/50 border border-slate-700/50 p-4 rounded-xl flex flex-col gap-3 group hover:bg-slate-800 transition-colors cursor-pointer block"
+                  >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className={`p-2 rounded-lg ${item.qaStatus === 'APPROVED' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
@@ -977,13 +2025,17 @@ export default function App() {
                         </div>
                       </div>
                       <div className="text-right flex flex-col items-end gap-1">
-                        <p className="text-xs font-medium text-slate-300">3.0m Rebar</p>
+                        <p className="text-xs font-medium text-slate-300">3.0m Rebar • <span className="text-orange-400">${item.costs.total.toFixed(0)}</span></p>
                         <div className="flex items-center gap-2">
                           <p className={`text-[10px] font-bold ${item.qaStatus === 'APPROVED' ? 'text-emerald-500' : 'text-red-500'}`}>
                             {item.qaStatus}
                           </p>
                           <button
-                            onClick={() => rerunQA(item.id)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              rerunQA(item.id);
+                            }}
                             className="p-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-white transition-colors"
                             title="Re-run QA Check"
                           >
@@ -1006,7 +2058,7 @@ export default function App() {
                         <div className="mt-2 pt-2 border-t border-slate-700/30">
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-[9px] text-slate-500 uppercase tracking-tighter">Tensile Strength</span>
-                            <span className={`text-[10px] font-bold ${getStrengthColorClass(item.qaReport.tensileStrength, 'text')}`}>
+                            <span className={`text-[10px] font-bold ${getStrengthColorClass(item.qaReport.tensileStrength, qaThresholds[item.steelType].minStrength, 'text')}`}>
                               {item.qaReport.tensileStrength.toFixed(0)} MPa
                             </span>
                           </div>
@@ -1014,14 +2066,33 @@ export default function App() {
                             {/* Mini Threshold Marker */}
                             <div className="absolute left-[62.5%] top-0 bottom-0 w-px bg-white/20 z-10" />
                             <div 
-                              className={`h-full ${getStrengthColorClass(item.qaReport.tensileStrength, 'bg')}`}
-                              style={{ width: `${Math.min((item.qaReport.tensileStrength / 800) * 100, 100)}%` }}
+                              className={`h-full ${getStrengthColorClass(item.qaReport.tensileStrength, qaThresholds[item.steelType].minStrength, 'bg')}`}
+                              style={{ width: `${Math.min((item.qaReport.tensileStrength / (qaThresholds[item.steelType].minStrength * 1.5)) * 100, 100)}%` }}
                             />
                           </div>
+                          {item.qaStatus === 'REJECTED' && item.qaReport.rejectionReasons && item.qaReport.rejectionReasons.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {item.qaReport.rejectionReasons.map((reason, idx) => (
+                                <span key={idx} className="text-[8px] px-1.5 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full">
+                                  {reason}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {item.qaReport.malfunctions && item.qaReport.malfunctions.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {item.qaReport.malfunctions.map((m, idx) => (
+                                <span key={idx} className="text-[8px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full flex items-center gap-0.5">
+                                  <Settings className="w-2 h-2" />
+                                  {m}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
-                  </div>
+                  </Link>
                 ))
               )}
             </div>
