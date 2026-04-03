@@ -1,0 +1,5 @@
+{
+  "name": "Steel Rolling Mill Simulator",
+  "description": "A simulation of the industrial rolling mill process, from cooking steel to QA and sales.",
+  "requestFramePermissions": []
+}
