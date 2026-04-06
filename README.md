@@ -1,60 +1,46 @@
-🌐 RPL Protocol Simulation Framework
-Autonomous Network Modeling & Data Analysis
+# 🌐 RPL Protocol Simulation & Analytical Framework
 
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+[![Gemini Powered](https://img.shields.io/badge/AI-Gemini%20Flash-blue?style=flat-square)](https://ai.google.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-LTS-green?style=flat-square)](https://nodejs.org/)
 
-📌 Project Overview
-This project is an AI-powered simulation environment designed to analyze the Routing Protocol for Low-Power and Lossy Networks (RPL). Built using the Gemini API and Node.js, this tool allows for the rapid prototyping of network behaviors in IoT environments, focusing on DODAG stability, parent selection, and packet delivery efficiency.
+A high-fidelity simulation environment for **Routing Protocol for Low-Power and Lossy Networks (RPL)**. This project leverages Generative AI to model complex IoT network behaviors, providing a scalable alternative to traditional hardware-intensive simulators.
 
-Key Portfolio Highlight: This simulation bridges the gap between theoretical network protocols and generative AI, allowing for "what-if" scenario testing that is often too computationally expensive in traditional simulators like Cooja.
+---
 
-📊 Data & Research Objectives
-To build a high-fidelity simulation, this project collects and synthesizes data across several key metrics:
+## 🚀 Executive Summary
+This project was developed to investigate the efficiency of the RPL protocol in dynamic environments. By integrating **Google Gemini API**, the simulation moves beyond static rule-sets to model stochastic packet loss, node failure patterns, and adaptive routing logic. This serves as a key pillar in my portfolio, demonstrating expertise in **Network Protocols**, **AI Integration**, and **Full-Stack Development**.
 
-1. Network Topologies
-*** Grid: Structured placement for industrial sensor monitoring.
-*** Random: Modeling ad-hoc deployments in unpredictable environments.
+---
 
-2. RPL-Specific Metrics (Data Points)
-We track and document the following parameters to validate the simulation:
+## 🛠 Core Technical Features
+* **DODAG Construction:** Real-time modeling of Destination-Oriented Directed Acyclic Graphs.
+* **Objective Function Analysis:** Comparative data collection between **OF0 (Objective Function Zero)** and **MRHOF (Minimum Rank with Hysteresis Objective Function)**.
+* **Telemetry Logging:** Granular data capture including Rank shifts, ETX (Expected Transmission Count), and Control Message overhead.
+* **Scalable Architecture:** Built on a modular Node.js backend for rapid iteration.
 
-*** Rank Calculation: Analyzing the accuracy of Objective Functions (OF0 vs MRHOF).
-*** Control Overhead: Measuring the impact of DIO, DIS, and DAO messages on network bandwidth.
-*** Churn Rate: Monitoring parent switches in the presence of node failure or signal interference.
+---
 
-🛠 Tech Stack
-*** Engine: Node.js
-*** LLM Integration: Google Gemini (Generative Modeling of Packet Loss & Node Logic)
-*** Frontend: (If applicable, e.g., React/Next.js)
-*** Development: Google AI Studio
+## 📊 Data Collection Schema
+To facilitate the "Data Build" phase of this simulation, the following metrics are tracked:
 
-🚀 Local Deployment
-Prerequisites
-***Node.js (LTS version)
-***A valid Gemini API Key
+| Data Category | Parameter | Description |
+| :--- | :--- | :--- |
+| **Topology** | `Node Density` | Number of active nodes within a defined radio range. |
+| **Reliability** | `PDR` | Packet Delivery Ratio measured against simulation time. |
+| **Stability** | `Parent Switches` | Frequency of preferred parent changes (Churn). |
+| **Efficiency** | `Control Overhead` | Ratio of DIO/DAO messages to user data packets. |
 
-Installation
-Clone the repository:
+---
 
-Bash
-git clone https://github.com/[Your-Username]/[Your-Repo-Name].git
-cd [Your-Repo-Name]
-Install dependencies:
+## 💻 Technical Implementation
 
-Bash
-npm install
-Environment Setup:
-Create a .env.local file in the root directory:
+### **Prerequisites**
+* **Node.js** (v18.x or higher)
+* **npm** (v9.x or higher)
+* **Google AI Studio API Key**
 
-Plaintext
-GEMINI_API_KEY=your_actual_api_key_here
-Run the application:
-
-Bash
-npm run dev
-📈 Future Roadmap
-[ ] Dynamic Visualization: Integration of D3.js to map node connections in real-time.
-[ ] Dataset Export: Exporting simulation logs in .jsonl format for fine-tuning specialized IoT models.
-[ ] Attack Simulation: Modeling Sybil and Blackhole attacks within the RPL rank structure.
+### **Installation & Deployment**
+1. **Clone the Repository**
+   ```bash
+   git clone [https://github.com/YourUsername/RPL-Simulation-App.git](https://github.com/YourUsername/RPL-Simulation-App.git)
+   cd RPL-Simulation-App
