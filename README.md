@@ -44,3 +44,40 @@ To facilitate the "Data Build" phase of this simulation, the following metrics a
    ```bash
    git clone [https://github.com/YourUsername/RPL-Simulation-App.git](https://github.com/YourUsername/RPL-Simulation-App.git)
    cd RPL-Simulation-App
+
+2. Dependency Management
+
+Bash
+npm install
+Environment Configuration
+Create a .env.local file in the root directory:
+
+Code snippet
+GEMINI_API_KEY=your_secure_api_key_here
+Execution
+
+Bash
+npm run dev
+📂 Project Structure
+* /src - Core simulation logic and protocol modeling.
+
+* /data - Standardized JSON/CSV outputs for simulation results.
+
+* /config - RPL parameter definitions and AI prompts.
+
+🎯 Portfolio Significance
+This project demonstrates a multi-disciplinary approach to software engineering:
+
+* Protocol Knowledge: Deep dive into RFC 6550 (RPL) standards.
+
+* AI Orchestration: Using LLMs for complex systems modeling rather than simple chat.
+
+* Data Integrity: Building robust logging systems to ensure simulation reproducibility.
+
+Developed by Romel Montiagodo | LinkedIn: https://www.linkedin.com/in/romel-montiagodo-533598318/ | Portfolio Website: devlogix-codebase-5y2lqyoow-devlogix-web13s-projects.vercel.app
+
+
+### Pro-Tips for your Portfolio:
+1.  **The Banner:** Make sure your `src` link for the image is correct. If you have the image in your repo, change the link to `./assets/banner.png`.
+2.  **Screenshots:** After you run the app, take 2–3 screenshots of the simulation logs or UI and add a `## Media` section. Recruiters love seeing the actual interface.
+3.  **License:** If you plan on making this public, add a `LICENSE` file (like MIT) to show you understand open-source standar
