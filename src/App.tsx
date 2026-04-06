@@ -258,7 +258,6 @@ interface Rebar {
     tensileStrength: number; // in MPa
     analysis: string;
     rejectionReasons?: string[];
-    malfunctions?: string[];
   };
   specs: {
     length: number;
@@ -279,14 +278,6 @@ interface AppNotification {
   message: string;
   timestamp: number;
 }
-
-type MachineId = 'HEATING' | 'RECTANGULAR_MOLD' | 'SQUARING' | 'GROVE_CIRCLE' | 'SIZING';
-
-type MaintenanceSchedule = {
-  batchesSinceLast: number;
-  threshold: number;
-  enabled: boolean;
-};
 
 const STAGES: { id: Stage; label: string; icon: React.ReactNode; color: string; description: string }[] = [
   { 
@@ -598,20 +589,6 @@ const InspectionPage = ({ history, manualReject, qaThresholds }: { history: Reba
                         "{item.qaReport.analysis}"
                       </p>
 
-                      {item.qaReport.malfunctions && item.qaReport.malfunctions.length > 0 && (
-                        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                          <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest mb-2 flex items-center gap-1">
-                            <Settings className="w-3 h-3" />
-                            Machine Malfunctions Detected:
-                          </p>
-                          <ul className="list-disc list-inside space-y-1">
-                            {item.qaReport.malfunctions.map((m: string, idx: number) => (
-                              <li key={idx} className="text-xs text-amber-300/80">{m}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
                       {item.qaStatus === 'REJECTED' && item.qaReport.rejectionReasons && item.qaReport.rejectionReasons.length > 0 && (
                         <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
                           <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest mb-2 flex items-center gap-1">
@@ -690,41 +667,7 @@ export default function App() {
     ALLOY: { threshold: 10, amount: 50, enabled: false }
   });
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [machineHealth, setMachineHealth] = useState<Record<MachineId, number>>({
-    HEATING: 100,
-    RECTANGULAR_MOLD: 100,
-    SQUARING: 100,
-    GROVE_CIRCLE: 100,
-    SIZING: 100
-  });
-  const [maintenanceSchedules, setMaintenanceSchedules] = useState<Record<MachineId, MaintenanceSchedule>>({
-    HEATING: { batchesSinceLast: 0, threshold: 50, enabled: true },
-    RECTANGULAR_MOLD: { batchesSinceLast: 0, threshold: 50, enabled: true },
-    SQUARING: { batchesSinceLast: 0, threshold: 50, enabled: true },
-    GROVE_CIRCLE: { batchesSinceLast: 0, threshold: 50, enabled: true },
-    SIZING: { batchesSinceLast: 0, threshold: 50, enabled: true }
-  });
   const lowInventoryNotified = useRef<Set<SteelType>>(new Set());
-  const lowHealthNotified = useRef<Set<MachineId>>(new Set());
-
-  // Machine health background degradation over time
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setMachineHealth(prev => {
-        const next = { ...prev };
-        let changed = false;
-        (Object.keys(next) as MachineId[]).forEach(mId => {
-          const decay = 0.001 * simSpeed; // Very slow background decay
-          if (next[mId] > 0) {
-            next[mId] = Math.max(0, next[mId] - decay);
-            changed = true;
-          }
-        });
-        return changed ? next : prev;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [simSpeed]);
 
   const addNotification = (type: string, message: string) => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -733,29 +676,6 @@ export default function App() {
 
   const dismissNotification = (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
-  };
-
-  const performMaintenance = (machineId: MachineId) => {
-    const cost = 500; // Flat repair cost
-    if (stats.revenue < cost) {
-      addNotification('MAINTENANCE_ERROR', `Insufficient funds for maintenance ($${cost} required).`);
-      return;
-    }
-    
-    setMachineHealth(prev => ({ ...prev, [machineId]: 100 }));
-    setMaintenanceSchedules(prev => ({
-      ...prev,
-      [machineId]: { ...prev[machineId], batchesSinceLast: 0 }
-    }));
-    setHistory(prev => {
-      // Deduct from revenue by adding to restock cost or similar (let's just deduct from stats if we had a balance)
-      // Actually, let's just track it in totalRestockCost for now as "Maintenance/Restock"
-      return prev;
-    });
-    setTotalRestockCost(prev => prev + cost);
-    lowHealthNotified.current.delete(machineId);
-    if (!isMuted) audio.playSale();
-    addNotification('MAINTENANCE_DONE', `${STAGES.find(s => s.id === machineId)?.label} maintenance complete.`);
   };
 
   // Inventory Monitoring & Auto-Replenishment Effect
@@ -806,8 +726,6 @@ export default function App() {
         - Manganese Range: ${thresholds.manganese.min}% - ${thresholds.manganese.max}%
         - Target Temperature: 1200°C (Max deviation: ${thresholds.maxTempDev}°C)
         
-        ${rebar.qaReport?.malfunctions?.length ? `CRITICAL: The following machine malfunctions occurred during production: ${rebar.qaReport.malfunctions.join(', ')}. These MUST be reflected in the report and likely cause rejection.` : ''}
-
         Provide a realistic metallurgical report. If the batch is rejected (isApproved: false), specify exactly which parameters failed in the rejectionReasons array (e.g., ["Tensile strength below minimum", "Carbon content too high"]).`,
         config: {
           responseMimeType: "application/json",
@@ -846,8 +764,7 @@ export default function App() {
           composition: report.composition,
           tensileStrength: report.tensileStrength,
           analysis: report.analysis,
-          rejectionReasons: report.rejectionReasons || [],
-          malfunctions: rebar.qaReport?.malfunctions || []
+          rejectionReasons: report.rejectionReasons || []
         }
       };
     } catch (error) {
@@ -932,47 +849,6 @@ export default function App() {
           ...updatedSteel.stageTimers,
           [currentStage]: duration
         };
-
-        // Check for malfunctions when leaving a stage
-        if (currentStage in machineHealth) {
-          const mId = currentStage as MachineId;
-          const health = machineHealth[mId];
-          
-          // Apply batch completion decay
-          setMachineHealth(prev => ({
-            ...prev,
-            [mId]: Math.max(0, prev[mId] - 2) // 2% per batch stage
-          }));
-
-          // Proactive maintenance increment
-          setMaintenanceSchedules(prev => {
-            const newCount = prev[mId].batchesSinceLast + 1;
-            if (prev[mId].enabled && newCount === prev[mId].threshold) {
-              addNotification(`MAINTENANCE_DUE_${mId}`, `Maintenance Due: ${STAGES.find(s => s.id === mId)?.label} has reached its scheduled maintenance threshold (${prev[mId].threshold} batches).`);
-            }
-            return {
-              ...prev,
-              [mId]: { ...prev[mId], batchesSinceLast: newCount }
-            };
-          });
-
-          // More aggressive malfunction chance at lower health
-          let malfunctionChance = 0;
-          if (health < 20) malfunctionChance = (100 - health) / 100; // Up to 100%
-          else if (health < 50) malfunctionChance = (100 - health) / 200; // Up to 40%
-          else malfunctionChance = (100 - health) / 500; // Up to 10%
-
-          if (Math.random() < malfunctionChance) {
-            const mLabel = STAGES.find(s => s.id === currentStage)?.label;
-            const malfunctions = updatedSteel.qaReport?.malfunctions || [];
-            updatedSteel.qaReport = {
-              ...updatedSteel.qaReport!,
-              malfunctions: [...malfunctions, `${mLabel} Malfunction`]
-            };
-            addNotification('MALFUNCTION', `Warning: ${mLabel} malfunction detected during processing!`);
-            if (!isMuted) audio.playQA(false);
-          }
-        }
         
         if (nextS === 'SQUARING') updatedSteel.specs.shape = 'SQUARE' as const;
         if (nextS === 'GROVE_CIRCLE') updatedSteel.specs.shape = 'CIRCLE' as const;
@@ -1012,7 +888,7 @@ export default function App() {
       setStageStartTime(0);
       setProgress(0);
     }
-  }, [currentStage, currentSteel, stageStartTime, machineHealth, isMuted, addNotification, maintenanceSchedules]);
+  }, [currentStage, currentSteel, stageStartTime]);
 
   // Handle Sound Effects
   useEffect(() => {
@@ -1047,20 +923,6 @@ export default function App() {
       interval = setInterval(() => {
         setCurrentTime(Date.now());
         let increment = 5 * simSpeed;
-        
-        // Machine health degradation (active use)
-        if (currentStage in machineHealth) {
-          const mId = currentStage as MachineId;
-          setMachineHealth(prev => {
-            const newHealth = Math.max(0, prev[mId] - (0.05 * simSpeed)); // Increased active decay
-            if (newHealth < 20 && !lowHealthNotified.current.has(mId)) {
-              addNotification(`LOW_HEALTH_${mId}`, `Critical Health: ${STAGES.find(s => s.id === mId)?.label} health is below 20%!`);
-              lowHealthNotified.current.add(mId);
-            }
-            return { ...prev, [mId]: newHealth };
-          });
-        }
-
         if (currentStage === 'HEATING') {
           // Higher temp = faster heating (shorter duration)
           // 1200 is baseline. 1500 is faster, 100 is slower.
@@ -1216,10 +1078,6 @@ export default function App() {
             stageStartTime={stageStartTime}
             notifications={notifications}
             dismissNotification={dismissNotification}
-            machineHealth={machineHealth}
-            performMaintenance={performMaintenance}
-            maintenanceSchedules={maintenanceSchedules}
-            setMaintenanceSchedules={setMaintenanceSchedules}
           />
         } />
         <Route path="/inspect/:id" element={<InspectionPage history={history} manualReject={manualReject} qaThresholds={qaThresholds} />} />
@@ -1236,8 +1094,7 @@ function Dashboard({
   startProcess, rerunQA, stats, inventory, setInventory, energyPrice,
   autoReplenishConfig, setAutoReplenishConfig, manualReject,
   qaThresholds, setQaThresholds, exportToCSV, exportToJSON,
-  currentTime, stageStartTime, notifications, dismissNotification,
-  machineHealth, performMaintenance, maintenanceSchedules, setMaintenanceSchedules
+  currentTime, stageStartTime, notifications, dismissNotification
 }: any) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 md:p-8">
@@ -1410,96 +1267,6 @@ function Dashboard({
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Production Line Visualization */}
         <div className="lg:col-span-2 space-y-8">
-          {/* Machine Health Section */}
-          <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-8 backdrop-blur-sm">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold flex items-center gap-2">
-                <Activity className="w-6 h-6 text-emerald-400" />
-                Machine Health & Maintenance
-              </h2>
-              <div className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
-                Repair Cost: $500 / Machine
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {(Object.keys(machineHealth) as MachineId[]).map((mId) => {
-                const stage = STAGES.find(s => s.id === mId);
-                const health = machineHealth[mId];
-                return (
-                  <div key={mId} className="bg-slate-800/30 border border-slate-700/30 p-4 rounded-2xl hover:bg-slate-800/50 transition-colors">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${stage?.color} text-white shadow-lg`}>
-                          {stage?.icon}
-                        </div>
-                        <span className="text-xs font-bold">{stage?.label}</span>
-                      </div>
-                      <span className={`text-xs font-mono font-bold ${health < 20 ? 'text-red-500' : health < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                        {Math.floor(health)}%
-                      </span>
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden mb-4 border border-slate-800">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${health}%` }}
-                        className={`h-full ${health < 20 ? 'bg-red-500' : health < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                      />
-                    </div>
-                    <button 
-                      onClick={() => performMaintenance(mId)}
-                      disabled={health > 95}
-                      className={`w-full py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all mb-3 ${
-                        health > 95 
-                          ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed' 
-                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20'
-                      }`}
-                    >
-                      {health > 95 ? 'Optimal' : 'Perform Maintenance'}
-                    </button>
-
-                    <div className="pt-3 border-t border-slate-700/50">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">Proactive Schedule</span>
-                        <button 
-                          onClick={() => setMaintenanceSchedules((prev: any) => ({
-                            ...prev,
-                            [mId]: { ...prev[mId], enabled: !prev[mId].enabled }
-                          }))}
-                          className={`w-4 h-4 rounded flex items-center justify-center transition-colors ${maintenanceSchedules[mId].enabled ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-500'}`}
-                        >
-                          <Bell className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1 bg-slate-950 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-blue-500/50 transition-all duration-500" 
-                            style={{ width: `${Math.min((maintenanceSchedules[mId].batchesSinceLast / maintenanceSchedules[mId].threshold) * 100, 100)}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <input 
-                            type="number"
-                            value={maintenanceSchedules[mId].threshold}
-                            onChange={(e) => setMaintenanceSchedules((prev: any) => ({
-                              ...prev,
-                              [mId]: { ...prev[mId], threshold: Math.max(1, parseInt(e.target.value) || 1) }
-                            }))}
-                            className="w-8 bg-slate-950 text-[10px] text-blue-400 font-mono text-center rounded border border-slate-700 focus:outline-none"
-                          />
-                          <span className="text-[8px] text-slate-600 uppercase font-bold">Batches</span>
-                        </div>
-                      </div>
-                      <p className="text-[8px] text-slate-500 mt-1">
-                        {maintenanceSchedules[mId].batchesSinceLast} / {maintenanceSchedules[mId].threshold} batches processed
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
           <section className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 md:p-8 overflow-hidden relative">
             <h2 className="text-xl font-semibold mb-8 flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-blue-400" />
@@ -1512,7 +1279,6 @@ function Dashboard({
                 {STAGES.map((stage, idx) => {
                   const isActive = currentStage === stage.id;
                   const isCompleted = STAGES.findIndex(s => s.id === currentStage) > idx;
-                  const health = machineHealth[stage.id as MachineId] ?? 100;
                   
                   return (
                     <div key={stage.id} className="flex flex-col items-center text-center group relative">
@@ -1520,30 +1286,19 @@ function Dashboard({
                       <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-48 p-2 bg-slate-800 text-slate-200 text-[10px] rounded-lg border border-slate-700 shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
                         <p className="font-bold text-blue-400 mb-1">{stage.label}</p>
                         {stage.description}
-                        <p className={`mt-1 font-bold ${health < 20 ? 'text-red-500' : health < 50 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                          Health: {Math.floor(health)}%
-                        </p>
                         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-800 border-r border-b border-slate-700 rotate-45" />
                       </div>
 
-                      <motion.div 
-                        animate={health < 20 ? { x: [0, -2, 2, -2, 2, 0] } : {}}
-                        transition={health < 20 ? { repeat: Infinity, duration: 0.2 } : {}}
-                        className={`
-                          relative w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-500
-                          ${isActive ? `${stage.color} scale-110 shadow-2xl shadow-${stage.color.split('-')[1]}-500/50` : 'bg-slate-800'}
-                          ${isCompleted ? 'border-2 border-emerald-500/50' : 'border border-slate-700'}
-                          ${health < 20 ? 'ring-2 ring-red-500 ring-offset-2 ring-offset-slate-950' : health < 50 ? 'ring-1 ring-amber-500/50' : ''}
-                        `}
-                      >
+                      <div className={`
+                        relative w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-500
+                        ${isActive ? `${stage.color} scale-110 shadow-2xl shadow-${stage.color.split('-')[1]}-500/50` : 'bg-slate-800'}
+                        ${isCompleted ? 'border-2 border-emerald-500/50' : 'border border-slate-700'}
+                      `}>
                         {isCompleted ? (
                           <CheckCircle2 className="w-6 h-6 text-emerald-400" />
                         ) : (
                           <div className={isActive ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'}>
                             {stage.icon}
-                            {health < 50 && !isActive && (
-                              <AlertTriangle className={`absolute -top-1 -right-1 w-4 h-4 ${health < 20 ? 'text-red-500' : 'text-amber-500'}`} />
-                            )}
                           </div>
                         )}
                         
@@ -1554,7 +1309,7 @@ function Dashboard({
                             animate={{ width: `${progress}%` }}
                           />
                         )}
-                      </motion.div>
+                      </div>
                       <span className={`mt-3 text-xs font-medium uppercase tracking-wider ${isActive ? 'text-white' : 'text-slate-500'}`}>
                         {stage.label}
                       </span>
@@ -2075,16 +1830,6 @@ function Dashboard({
                               {item.qaReport.rejectionReasons.map((reason, idx) => (
                                 <span key={idx} className="text-[8px] px-1.5 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-full">
                                   {reason}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {item.qaReport.malfunctions && item.qaReport.malfunctions.length > 0 && (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {item.qaReport.malfunctions.map((m, idx) => (
-                                <span key={idx} className="text-[8px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full flex items-center gap-0.5">
-                                  <Settings className="w-2 h-2" />
-                                  {m}
                                 </span>
                               ))}
                             </div>
